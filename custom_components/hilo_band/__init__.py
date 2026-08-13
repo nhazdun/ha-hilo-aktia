@@ -12,7 +12,13 @@ from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant, ServiceCall
 from homeassistant.helpers import config_validation as cv
 
-from .const import ATTR_FULL, CONF_ENABLE_BLE, DOMAIN, SERVICE_IMPORT_HISTORY
+from .const import (
+    ATTR_FULL,
+    CONF_ENABLE_BLE,
+    DOMAIN,
+    POD_ADV_PREFIX,
+    SERVICE_IMPORT_HISTORY,
+)
 from .coordinator import HiloBleCoordinator, HiloCloudCoordinator
 from .statistics import HiloStatisticsImporter
 
@@ -41,6 +47,43 @@ def _slug(entry: HiloConfigEntry, serial: str | None) -> str:
     return re.sub(r"[^a-z0-9_]", "_", raw.lower())
 
 
+def _ble_address(hass: HomeAssistant, pod) -> str | None:
+    """Find the band's Bluetooth address.
+
+    The cloud's device record has a macAddress field, but it comes back empty
+    for at least some accounts, so fall back to matching the advertising name
+    against what Home Assistant's Bluetooth stack has actually seen. The pod
+    always advertises as ``AKTIIA P...`` (Constants$BLE in the app), and the
+    cloud does report that name even when it withholds the MAC.
+    """
+    if pod is None:
+        return None
+    if pod.mac_address:
+        return pod.mac_address
+
+    try:
+        from homeassistant.components import bluetooth
+    except ImportError:  # pragma: no cover - Bluetooth not installed
+        return None
+
+    wanted = (pod.advertising_name or "").upper()
+    try:
+        discovered = bluetooth.async_discovered_service_info(hass, connectable=False)
+    except Exception as err:  # noqa: BLE001 - Bluetooth may not be set up
+        _LOGGER.debug("Bluetooth not available for band lookup: %s", err)
+        return None
+
+    for info in discovered:
+        name = (info.name or "").upper()
+        if not name.startswith(POD_ADV_PREFIX):
+            continue
+        # Prefer the exact band this account owns; otherwise take any pod.
+        if not wanted or name == wanted:
+            _LOGGER.debug("Matched band %s at %s by name", info.name, info.address)
+            return info.address
+    return None
+
+
 async def async_setup_entry(hass: HomeAssistant, entry: HiloConfigEntry) -> bool:
     """Set up Hilo Band from a config entry."""
     cloud = HiloCloudCoordinator(hass, entry)
@@ -57,14 +100,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: HiloConfigEntry) -> bool
     cloud.importer = importer
 
     ble: HiloBleCoordinator | None = None
-    # The cloud tells us the band's MAC, so Bluetooth presence can be attached
-    # to the same device without asking the user for an address. Bluetooth is
-    # optional here, so a system without it just gets the cloud entities.
-    if entry.options.get(CONF_ENABLE_BLE, True) and pod and pod.mac_address:
+    # Bluetooth presence attaches to the same device without asking the user
+    # for an address. Bluetooth is optional, so a system without it (or a band
+    # that is never seen advertising) just gets the cloud entities.
+    if entry.options.get(CONF_ENABLE_BLE, True) and (address := _ble_address(hass, pod)):
         try:
-            candidate = HiloBleCoordinator(hass, entry, pod.mac_address)
+            candidate = HiloBleCoordinator(hass, entry, address)
             await candidate.async_start()
-        except (RuntimeError, ValueError, KeyError) as err:
+        except Exception as err:  # noqa: BLE001 - presence is a nice-to-have
             _LOGGER.debug("Bluetooth presence unavailable, continuing without: %s", err)
         else:
             ble = candidate

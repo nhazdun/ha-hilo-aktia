@@ -184,6 +184,10 @@ class HiloStatisticsImporter:
             source=DOMAIN,
             statistic_id=_statistic_id(self._slug, key),
             unit_of_measurement=meta["unit"],
+            # mmHg and bpm have no unit converter, and blood pressure must
+            # never be rescaled anyway - state the absence explicitly rather
+            # than let the recorder warn about an unspecified unit class.
+            unit_class=None,
             **_MEAN_KWARGS,
         )
         async_add_external_statistics(self.hass, metadata, statistics)
