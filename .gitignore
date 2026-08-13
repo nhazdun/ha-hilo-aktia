@@ -1,0 +1,25 @@
+# Decompiled APK output — do not commit (copyrighted third-party binary)
+android/
+android-full/
+android-smali/
+*.apk
+*.dex
+
+# Secrets
+secrets.yaml
+.env
+*.token
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+
+# OS / editors
+.DS_Store
+.idea/
+.vscode/

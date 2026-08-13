@@ -1,0 +1,76 @@
+{
+  "config": {
+    "flow_title": "{name}",
+    "step": {
+      "confirm": {
+        "title": "Add Hilo Band",
+        "description": "Set up {name}?\n\nPassive mode only listens for advertisements and never connects, so it cannot disturb the Hilo app on your phone. Active mode also connects on a slow interval to read battery and storage, which only works while the band is not bonded to your phone.",
+        "data": {
+          "mode": "Mode"
+        }
+      },
+      "user": {
+        "title": "Add Hilo Band",
+        "description": "Choose the band to add.",
+        "data": {
+          "address": "Device",
+          "mode": "Mode"
+        }
+      }
+    },
+    "abort": {
+      "already_configured": "This band is already configured.",
+      "no_devices_found": "No Hilo Band found. Make sure the band is worn or awake and within range of a Bluetooth adapter or proxy.",
+      "not_supported": "This Bluetooth device is not a Hilo Band. The Hilo cuff is a separate device and is not supported here."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Hilo Band options",
+        "data": {
+          "mode": "Mode",
+          "scan_interval": "Active read interval"
+        },
+        "data_description": {
+          "scan_interval": "How often to connect in active mode. Keep this long: every connection competes with your phone for the band's single Bluetooth link."
+        }
+      }
+    }
+  },
+  "selector": {
+    "mode": {
+      "options": {
+        "passive": "Passive (advertisements only, never connects)",
+        "active": "Active (also connect to read battery and storage)"
+      }
+    }
+  },
+  "entity": {
+    "binary_sensor": {
+      "presence": {
+        "name": "In range"
+      }
+    },
+    "sensor": {
+      "rssi": {
+        "name": "Signal strength"
+      },
+      "last_seen": {
+        "name": "Last seen"
+      },
+      "frames_pending": {
+        "name": "Frames pending upload"
+      },
+      "storage_level": {
+        "name": "Storage used"
+      },
+      "band_time": {
+        "name": "Band clock"
+      },
+      "last_active_read": {
+        "name": "Last successful read"
+      }
+    }
+  }
+}
