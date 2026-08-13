@@ -167,6 +167,16 @@ def _parse_epoch(value: Any, local_tz: tzinfo | None = None) -> datetime | None:
     return wall_clock.replace(tzinfo=local_tz or timezone.utc)
 
 
+def _api_date(value: date) -> str:
+    """Format a date the way the API expects it.
+
+    Not ISO — the app's ``DateUtilKt.formatDateForSendingToAPI`` uses the Joda
+    pattern ``dd-MM-yyyy`` for every date query parameter. Sending ISO gets a
+    400 from /all-measurements and silently empty bodies elsewhere.
+    """
+    return value.strftime("%d-%m-%Y")
+
+
 def _tz_from_name(name: Any, fallback: tzinfo | None) -> tzinfo | None:
     """Resolve the DTO's ``timezone`` field, which may be a name or an offset."""
     if not isinstance(name, str) or not name:
@@ -447,8 +457,8 @@ class AktiiaClient:
             data = await self._get(
                 EP_ALL_MEASUREMENTS,
                 {
-                    "from": start.isoformat(),
-                    "to": end.isoformat(),
+                    "from": _api_date(start),
+                    "to": _api_date(end),
                     "page": page,
                     "size": page_size,
                 },
@@ -493,7 +503,7 @@ class AktiiaClient:
 
     async def async_get_daily(self, day: date) -> DailyStats:
         """Averages and counts for one day."""
-        data = await self._get(EP_DAILY, {"date": day.isoformat()})
+        data = await self._get(EP_DAILY, {"date": _api_date(day)})
         if not isinstance(data, dict):
             return DailyStats()
         average = data.get("avg") or {}
@@ -508,7 +518,7 @@ class AktiiaClient:
 
     async def async_get_daily_ttr(self, day: date) -> TimeInRange:
         """Time-in-target-range for one day."""
-        data = await self._get(EP_DAILY_TTR, {"date": day.isoformat()})
+        data = await self._get(EP_DAILY_TTR, {"date": _api_date(day)})
         if not isinstance(data, dict):
             return TimeInRange()
         return TimeInRange(
@@ -521,7 +531,7 @@ class AktiiaClient:
 
     async def async_get_sleep(self, day: date) -> SleepSummary:
         """Sleep summary for one day."""
-        data = await self._get(EP_SLEEP_SUMMARY, {"date": day.isoformat()})
+        data = await self._get(EP_SLEEP_SUMMARY, {"date": _api_date(day)})
         if not isinstance(data, dict):
             return SleepSummary()
         return SleepSummary(
@@ -534,8 +544,8 @@ class AktiiaClient:
     async def async_get_steps(self, day: date) -> tuple[float | None, float | None]:
         """Return ``(average, today)`` step counts over the trailing week."""
         params = {
-            "from": (day - timedelta(days=7)).isoformat(),
-            "to": day.isoformat(),
+            "from": _api_date(day - timedelta(days=7)),
+            "to": _api_date(day),
         }
         data = await self._get(EP_STEPS, params)
         if not isinstance(data, dict):
@@ -546,9 +556,13 @@ class AktiiaClient:
         today = None
         series = data.get("series")
         if isinstance(series, dict):
-            entry = series.get(day.isoformat())
-            if isinstance(entry, dict):
-                today = _as_float(entry.get("value"))
+            # The series is keyed by date string; accept either the API's
+            # dd-MM-yyyy or a plain ISO key rather than guessing.
+            for key in (_api_date(day), day.isoformat()):
+                entry = series.get(key)
+                if isinstance(entry, dict):
+                    today = _as_float(entry.get("value"))
+                    break
         return average, today
 
     async def async_get_latest_initialization(self) -> tuple[datetime | None, bool | None]:
