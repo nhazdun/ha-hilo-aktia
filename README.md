@@ -75,6 +75,43 @@ Bluetooth presence needs no setup: the cloud reports the band's MAC address, so
 if Home Assistant can see it (a local adapter or an ESPHome Bluetooth proxy) the
 presence sensors attach to the same device automatically.
 
+## History and long-term statistics
+
+Measurements arrive with timestamps in the past — on a first sync, potentially
+months of them. Sensor states cannot express that, because the recorder
+timestamps a state when it *sees* it. So history is written as **external
+statistics** instead, which is Home Assistant's supported way to backfill a
+series from an outside source.
+
+Three streams are imported, bucketed hourly with mean/min/max:
+
+* `hilo_band:<serial>_systolic`
+* `hilo_band:<serial>_diastolic`
+* `hilo_band:<serial>_heart_rate`
+
+Add them to a dashboard with a **Statistics graph** card, or browse them under
+Developer tools → Statistics.
+
+The first import runs in the background right after setup and reaches back to
+your first-ever measurement (or a year, if the account does not report one).
+Every later poll resumes from the last written hour, so routine updates are
+cheap.
+
+To re-import manually — for example after a long outage, or to rebuild
+everything from scratch:
+
+```yaml
+action: hilo_band.import_history
+data:
+  full: true
+```
+
+Leave `full` off (or `false`) to just top up from where it left off.
+
+These statistics are deliberately separate from the live sensors' own
+statistics, so the backfill and the recorder never fight over the same
+statistic id.
+
 ## Safety and privacy
 
 * **Read-only.** After signing in, the integration only issues GET requests. It

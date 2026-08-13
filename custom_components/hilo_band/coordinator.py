@@ -61,7 +61,10 @@ class HiloCloudCoordinator(DataUpdateCoordinator[AktiiaData]):
             access_token=entry.data.get(CONF_ACCESS_TOKEN),
             refresh_token=entry.data.get(CONF_REFRESH_TOKEN),
             server_url=entry.data.get(CONF_SERVER_URL),
+            local_tz=dt_util.get_default_time_zone(),
         )
+        # Set during setup; polls then keep statistics topped up.
+        self.importer = None
 
     async def _async_update_data(self) -> AktiiaData:
         """Fetch the current snapshot from the cloud."""
@@ -74,7 +77,22 @@ class HiloCloudCoordinator(DataUpdateCoordinator[AktiiaData]):
             raise UpdateFailed(str(err)) from err
 
         self._persist_tokens()
+        await self._async_top_up_statistics()
         return data
+
+    async def _async_top_up_statistics(self) -> None:
+        """Extend the statistics history with anything new since last poll.
+
+        Cheap by construction: it resumes from the last written hour, so a
+        routine poll imports at most a handful of measurements. A failure here
+        must not fail the poll - the live sensors are still valid.
+        """
+        if self.importer is None:
+            return
+        try:
+            await self.importer.async_import()
+        except Exception:  # noqa: BLE001 - statistics are best-effort
+            _LOGGER.exception("Failed to extend Hilo statistics history")
 
     def _persist_tokens(self) -> None:
         """Write refreshed tokens back to the config entry.

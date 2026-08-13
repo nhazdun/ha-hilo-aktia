@@ -23,10 +23,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import uuid
 from dataclasses import dataclass, field
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone, tzinfo
 from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import aiohttp
 from aiohttp import ClientResponseError, ClientSession
@@ -37,9 +39,11 @@ from .const import (
     API_PRODUCT_STANDARD,
     API_VERSION_CODE,
     CLOUD_RESOLVER_URL,
+    EP_ALL_MEASUREMENTS,
     EP_DAILY,
     EP_DAILY_TTR,
     EP_DEVICES,
+    EP_FIRST_MEASUREMENT,
     EP_LATEST_INITIALIZATION,
     EP_LATEST_MEASUREMENT,
     EP_LOGIN,
@@ -141,16 +145,43 @@ class AktiiaData:
     cuff: DeviceInfo | None = None
 
 
-def _parse_epoch(value: Any) -> datetime | None:
-    """Parse an epoch timestamp that may be in seconds or milliseconds."""
-    if not isinstance(value, (int, float)) or value <= 0:
+def _parse_epoch(value: Any, local_tz: tzinfo | None = None) -> datetime | None:
+    """Parse an Aktiia timestamp into a correct, timezone-aware datetime.
+
+    Aktiia encodes the measurement's **local wall-clock time** as if it were a
+    UTC epoch. Verified against a live account: a measurement taken at 00:34
+    local (UTC+03:00) came back as an epoch that decodes to 00:34 UTC, i.e.
+    three hours in the future. Decoding it naively puts recent measurements
+    ahead of "now".
+
+    So: decode to a naive wall-clock time, then attach the real zone.
+    """
+    if not isinstance(value, (int, float)) or isinstance(value, bool) or value <= 0:
         return None
-    # The app stores these as epoch millis; tolerate seconds too.
+    # Epoch millis in practice; tolerate seconds.
     seconds = value / 1000 if value > 1e11 else value
     try:
-        return datetime.fromtimestamp(seconds, tz=timezone.utc)
+        wall_clock = datetime.fromtimestamp(seconds, tz=timezone.utc).replace(tzinfo=None)
     except (OverflowError, OSError, ValueError):
         return None
+    return wall_clock.replace(tzinfo=local_tz or timezone.utc)
+
+
+def _tz_from_name(name: Any, fallback: tzinfo | None) -> tzinfo | None:
+    """Resolve the DTO's ``timezone`` field, which may be a name or an offset."""
+    if not isinstance(name, str) or not name:
+        return fallback
+    try:
+        return ZoneInfo(name)
+    except (ZoneInfoNotFoundError, ValueError):
+        pass
+    # Tolerate "+03:00" / "-0500" style offsets.
+    match = re.fullmatch(r"([+-])(\d{2}):?(\d{2})", name.strip())
+    if match:
+        sign = 1 if match.group(1) == "+" else -1
+        delta = timedelta(hours=int(match.group(2)), minutes=int(match.group(3)))
+        return timezone(sign * delta)
+    return fallback
 
 
 def _parse_iso(value: Any) -> datetime | None:
@@ -190,6 +221,7 @@ class AktiiaClient:
         access_token: str | None = None,
         refresh_token: str | None = None,
         server_url: str | None = None,
+        local_tz: tzinfo | None = None,
     ) -> None:
         self._session = session
         self._device_id = device_id
@@ -197,6 +229,9 @@ class AktiiaClient:
         self._refresh_token = refresh_token
         self._server_url = (server_url or CLOUD_RESOLVER_URL).rstrip("/")
         self._refresh_lock = asyncio.Lock()
+        # Timestamps come back as local wall-clock encoded as UTC, so we need
+        # to know which zone that wall clock belongs to. See _parse_epoch.
+        self._local_tz = local_tz or timezone.utc
 
     # ------------------------------------------------------------------
     # Session state - persisted in the config entry so we can skip login
@@ -380,14 +415,81 @@ class AktiiaClient:
         data = await self._get(EP_LATEST_MEASUREMENT)
         if not isinstance(data, dict):
             return Measurement()
+        # This DTO carries its own timezone; prefer it over the HA default.
+        tz = _tz_from_name(data.get("timezone"), self._local_tz)
         return Measurement(
             systolic=_as_int(data.get("sys")),
             diastolic=_as_int(data.get("dia")),
             heart_rate=_as_int(data.get("hr")),
-            taken_at=_parse_epoch(data.get("dateTime")),
+            taken_at=_parse_epoch(data.get("dateTime"), tz),
             measurement_type=data.get("measurementType"),
             algo_version=data.get("algoVersion"),
         )
+
+    async def async_get_first_measurement_date(self) -> datetime | None:
+        """When the account's very first measurement was recorded."""
+        data = await self._get(EP_FIRST_MEASUREMENT)
+        if not isinstance(data, dict):
+            return None
+        return _parse_epoch(data.get("date"), self._local_tz)
+
+    async def async_get_measurement_history(
+        self, start: date, end: date, *, page_size: int = 500, max_pages: int = 200
+    ) -> list[Measurement]:
+        """Page through every measurement in ``[start, end]``.
+
+        ``max_pages`` is a runaway guard; if it trips we log how much was
+        skipped rather than silently returning a truncated history.
+        """
+        collected: list[Measurement] = []
+        page = 0
+        while page < max_pages:
+            data = await self._get(
+                EP_ALL_MEASUREMENTS,
+                {
+                    "from": start.isoformat(),
+                    "to": end.isoformat(),
+                    "page": page,
+                    "size": page_size,
+                },
+            )
+            if not isinstance(data, dict):
+                break
+
+            raw = data.get("measurements")
+            if not isinstance(raw, list) or not raw:
+                break
+
+            for item in raw:
+                if not isinstance(item, dict):
+                    continue
+                taken_at = _parse_epoch(item.get("dateTime"), self._local_tz)
+                if taken_at is None:
+                    continue
+                collected.append(
+                    Measurement(
+                        systolic=_as_int(item.get("sys")),
+                        diastolic=_as_int(item.get("dia")),
+                        heart_rate=_as_int(item.get("hr")),
+                        taken_at=taken_at,
+                        measurement_type=item.get("measurementType"),
+                    )
+                )
+
+            info = data.get("page")
+            total_pages = info.get("totalPages") if isinstance(info, dict) else None
+            page += 1
+            if not isinstance(total_pages, int) or page >= total_pages:
+                break
+        else:
+            _LOGGER.warning(
+                "Stopped paging Aktiia history at %s pages (%s measurements); "
+                "older data was not imported",
+                max_pages,
+                len(collected),
+            )
+
+        return collected
 
     async def async_get_daily(self, day: date) -> DailyStats:
         """Averages and counts for one day."""
@@ -455,7 +557,7 @@ class AktiiaClient:
         if not isinstance(data, dict):
             return None, None
         partial = data.get("isPartial")
-        return _parse_epoch(data.get("time")), (
+        return _parse_epoch(data.get("time"), self._local_tz), (
             partial if isinstance(partial, bool) else None
         )
 

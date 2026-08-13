@@ -227,6 +227,7 @@ EP_DAILY_TTR: Final = "physiological/api/v2/daily/ttr"
 EP_MONTHLY: Final = "physiological/api/v2/monthly"
 EP_DAY_NIGHT: Final = "physiological/api/v2/day-night"
 EP_LATEST_INITIALIZATION: Final = "physiological/api/v1/latest-initialization"
+EP_FIRST_MEASUREMENT: Final = "physiological/api/v1/first"
 
 # Context data
 EP_SLEEP_SUMMARY: Final = "context-data/api/v1/daily-summary/sleep"
@@ -244,3 +245,17 @@ HTTP_UPGRADE_REQUIRED: Final = 426
 # polling faster than this just burns requests.
 DEFAULT_CLOUD_INTERVAL: Final = 1800  # seconds
 MIN_CLOUD_INTERVAL: Final = 300
+
+# --------------------------------------------------------------------------
+# Long-term statistics
+# --------------------------------------------------------------------------
+# Measurements arrive with past timestamps, so history is written as external
+# statistics rather than sensor states. One stream per value.
+STAT_STREAMS: Final = {
+    "systolic": {"attr": "systolic", "name": "systolic", "unit": "mmHg"},
+    "diastolic": {"attr": "diastolic", "name": "diastolic", "unit": "mmHg"},
+    "heart_rate": {"attr": "heart_rate", "name": "heart rate", "unit": "bpm"},
+}
+
+SERVICE_IMPORT_HISTORY: Final = "import_history"
+ATTR_FULL: Final = "full"

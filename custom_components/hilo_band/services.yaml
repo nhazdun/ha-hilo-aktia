@@ -1,0 +1,7 @@
+import_history:
+  fields:
+    full:
+      required: false
+      default: false
+      selector:
+        boolean:

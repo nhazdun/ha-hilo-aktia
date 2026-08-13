@@ -3,11 +3,12 @@
   "name": "Hilo Band (Aktiia)",
   "codeowners": ["@nhazdun"],
   "config_flow": true,
+  "dependencies": ["recorder"],
   "after_dependencies": ["bluetooth_adapters"],
   "documentation": "https://github.com/nhazdun/ha-hilo-aktia",
   "integration_type": "device",
   "iot_class": "cloud_polling",
   "issue_tracker": "https://github.com/nhazdun/ha-hilo-aktia/issues",
   "requirements": [],
-  "version": "0.2.0"
+  "version": "0.3.0"
 }
