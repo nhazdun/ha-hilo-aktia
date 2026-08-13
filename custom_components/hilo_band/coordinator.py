@@ -1,12 +1,13 @@
-"""Coordinator for the Hilo Band.
+"""Coordinators for the Hilo Band integration.
 
-Two modes:
+Two independent sources feed one Home Assistant device:
 
-* ``passive`` (default) - only listens for advertisements. Never connects, so
-  it cannot interfere with the phone app's link to the band. Gives presence,
-  RSSI and last-seen.
-* ``active`` - additionally connects on a slow interval to read battery, frame
-  count, storage and device info. Reads only; see ``band.py``.
+* :class:`HiloCloudCoordinator` polls Aktiia's cloud for the actual health data
+  (blood pressure, heart rate, time-in-range, sleep, steps, calibration). This
+  is the only place blood pressure exists - the band never computes it.
+* :class:`HiloBleCoordinator` optionally listens for the band's Bluetooth
+  advertisements to tell you whether it is physically nearby. It never
+  connects, so it cannot disturb the phone app.
 """
 
 from __future__ import annotations
@@ -14,7 +15,6 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timedelta, timezone
 
-from bleak.exc import BleakError
 from homeassistant.components import bluetooth
 from homeassistant.components.bluetooth import (
     BluetoothChange,
@@ -23,57 +23,107 @@ from homeassistant.components.bluetooth import (
 )
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import CALLBACK_TYPE, HomeAssistant, callback
-from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
+from homeassistant.exceptions import ConfigEntryAuthFailed
+from homeassistant.helpers.aiohttp_client import async_get_clientsession
+from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
+from homeassistant.util import dt as dt_util
 
-from .band import HiloBandAuthError, HiloBandClient, HiloBandData
+from .api import AktiiaAuthError, AktiiaClient, AktiiaData, AktiiaError
 from .const import (
-    CONF_MODE,
+    CONF_ACCESS_TOKEN,
+    CONF_DEVICE_ID,
+    CONF_REFRESH_TOKEN,
     CONF_SCAN_INTERVAL,
-    DEFAULT_ACTIVE_INTERVAL,
+    CONF_SERVER_URL,
     DEFAULT_AWAY_TIMEOUT,
-    DEFAULT_MODE,
+    DEFAULT_CLOUD_INTERVAL,
     DOMAIN,
-    MODE_ACTIVE,
 )
 
 _LOGGER = logging.getLogger(__name__)
 
 
-class HiloBandCoordinator(DataUpdateCoordinator[HiloBandData]):
-    """Keeps a HiloBandData snapshot fresh from advertisements and GATT reads."""
+class HiloCloudCoordinator(DataUpdateCoordinator[AktiiaData]):
+    """Polls the Aktiia cloud for this account."""
 
     def __init__(self, hass: HomeAssistant, entry: ConfigEntry) -> None:
-        self.address: str = entry.data["address"]
-        self.mode: str = entry.options.get(
-            CONF_MODE, entry.data.get(CONF_MODE, DEFAULT_MODE)
-        )
-        interval_seconds: int = entry.options.get(
-            CONF_SCAN_INTERVAL, entry.data.get(CONF_SCAN_INTERVAL, DEFAULT_ACTIVE_INTERVAL)
-        )
-
+        interval = entry.options.get(CONF_SCAN_INTERVAL, DEFAULT_CLOUD_INTERVAL)
         super().__init__(
             hass,
             _LOGGER,
             config_entry=entry,
-            name=f"{DOMAIN} {self.address}",
-            # Passive mode never polls; the advertisement callback drives updates.
-            update_interval=(
-                timedelta(seconds=interval_seconds) if self.mode == MODE_ACTIVE else None
-            ),
+            name=f"{DOMAIN} cloud",
+            update_interval=timedelta(seconds=interval),
+        )
+        self.client = AktiiaClient(
+            async_get_clientsession(hass),
+            device_id=entry.data[CONF_DEVICE_ID],
+            access_token=entry.data.get(CONF_ACCESS_TOKEN),
+            refresh_token=entry.data.get(CONF_REFRESH_TOKEN),
+            server_url=entry.data.get(CONF_SERVER_URL),
         )
 
-        self.entry = entry
-        self._client = HiloBandClient(self.address)
-        self._unregister_advertisements: CALLBACK_TYPE | None = None
-        self.data = HiloBandData(address=self.address)
+    async def _async_update_data(self) -> AktiiaData:
+        """Fetch the current snapshot from the cloud."""
+        try:
+            data = await self.client.async_fetch_all(dt_util.now().date())
+        except AktiiaAuthError as err:
+            # Refresh token is dead - ask the user to sign in again.
+            raise ConfigEntryAuthFailed(str(err)) from err
+        except AktiiaError as err:
+            raise UpdateFailed(str(err)) from err
 
-    # ------------------------------------------------------------------
-    # Passive advertisement tracking
-    # ------------------------------------------------------------------
+        self._persist_tokens()
+        return data
+
+    def _persist_tokens(self) -> None:
+        """Write refreshed tokens back to the config entry.
+
+        The client rotates tokens transparently on 401; without this the entry
+        would keep the stale pair and force a full re-login after a restart.
+        """
+        entry = self.config_entry
+        if entry is None:
+            return
+        current = {
+            CONF_ACCESS_TOKEN: self.client.access_token,
+            CONF_REFRESH_TOKEN: self.client.refresh_token,
+            CONF_SERVER_URL: self.client.server_url,
+        }
+        if all(entry.data.get(key) == value for key, value in current.items()):
+            return
+        self.hass.config_entries.async_update_entry(
+            entry, data={**entry.data, **current}
+        )
+
+
+class HiloBleCoordinator:
+    """Tracks the band's Bluetooth advertisements. Passive, never connects."""
+
+    def __init__(self, hass: HomeAssistant, entry: ConfigEntry, address: str) -> None:
+        self.hass = hass
+        self.entry = entry
+        self.address = address.upper()
+        self.rssi: int | None = None
+        self.last_seen: datetime | None = None
+        self._unregister: CALLBACK_TYPE | None = None
+        self._listeners: list[CALLBACK_TYPE] = []
+
+    @callback
+    def async_add_listener(self, update_callback: CALLBACK_TYPE) -> CALLBACK_TYPE:
+        """Register an entity to be notified on each advertisement."""
+        self._listeners.append(update_callback)
+
+        @callback
+        def _remove() -> None:
+            if update_callback in self._listeners:
+                self._listeners.remove(update_callback)
+
+        return _remove
 
     async def async_start(self) -> None:
-        """Begin listening for advertisements from this band."""
-        self._unregister_advertisements = bluetooth.async_register_callback(
+        """Begin listening for this band's advertisements."""
+        self._unregister = bluetooth.async_register_callback(
             self.hass,
             self._async_on_advertisement,
             {"address": self.address},
@@ -81,75 +131,36 @@ class HiloBandCoordinator(DataUpdateCoordinator[HiloBandData]):
         )
         self.entry.async_on_unload(self.async_stop)
 
-        # Seed from whatever the Bluetooth integration has already cached.
         if service_info := bluetooth.async_last_service_info(
             self.hass, self.address, connectable=False
         ):
-            self._apply_advertisement(service_info)
+            self._apply(service_info)
 
     @callback
     def async_stop(self) -> None:
         """Stop listening."""
-        if self._unregister_advertisements is not None:
-            self._unregister_advertisements()
-            self._unregister_advertisements = None
+        if self._unregister is not None:
+            self._unregister()
+            self._unregister = None
 
     @callback
     def _async_on_advertisement(
         self, service_info: BluetoothServiceInfoBleak, change: BluetoothChange
     ) -> None:
-        self._apply_advertisement(service_info)
-        self.async_update_listeners()
+        self._apply(service_info)
+        for listener in self._listeners:
+            listener()
 
     @callback
-    def _apply_advertisement(self, service_info: BluetoothServiceInfoBleak) -> None:
-        self.data.name = service_info.name or self.data.name
-        self.data.rssi = service_info.rssi
-        self.data.last_seen = datetime.now(timezone.utc)
-
-    # ------------------------------------------------------------------
-    # Presence
-    # ------------------------------------------------------------------
+    def _apply(self, service_info: BluetoothServiceInfoBleak) -> None:
+        self.rssi = service_info.rssi
+        self.last_seen = datetime.now(timezone.utc)
 
     @property
-    def available(self) -> bool:
-        """True while the band has advertised recently."""
-        if self.data.last_seen is None:
+    def in_range(self) -> bool:
+        """True while the band advertised recently."""
+        if self.last_seen is None:
             return False
-        age = datetime.now(timezone.utc) - self.data.last_seen
-        return age < timedelta(seconds=DEFAULT_AWAY_TIMEOUT)
-
-    # ------------------------------------------------------------------
-    # Active polling
-    # ------------------------------------------------------------------
-
-    async def _async_update_data(self) -> HiloBandData:
-        """Connect and read. Only called in active mode."""
-        device = bluetooth.async_ble_device_from_address(
-            self.hass, self.address, connectable=True
+        return datetime.now(timezone.utc) - self.last_seen < timedelta(
+            seconds=DEFAULT_AWAY_TIMEOUT
         )
-        if device is None:
-            # Out of range, or only reachable through a non-connectable proxy.
-            # Keep the passive data we already have rather than going unavailable.
-            self.data.last_error = "not_in_range"
-            return self.data
-
-        try:
-            data = await self._client.async_read(device, previous=self.data)
-        except HiloBandAuthError as err:
-            # Expected whenever the band is bonded to the phone. Log once at
-            # info level and keep serving passive data.
-            _LOGGER.info("Hilo Band %s: %s", self.address, err)
-            self.data.last_error = "bonded_elsewhere"
-            return self.data
-        except BleakError as err:
-            _LOGGER.debug("Hilo Band %s read failed: %s", self.address, err)
-            self.data.last_error = str(err)
-            return self.data
-
-        # Preserve passive fields the GATT read does not provide.
-        data.rssi = self.data.rssi
-        data.last_seen = self.data.last_seen
-        data.last_error = None
-        self.data = data
-        return data

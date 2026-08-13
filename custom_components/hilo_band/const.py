@@ -179,6 +179,11 @@ AUTH_ERROR_STATUSES: Final = frozenset(
 CONF_ADDRESS: Final = "address"
 CONF_MODE: Final = "mode"
 CONF_SCAN_INTERVAL: Final = "scan_interval"
+CONF_ACCESS_TOKEN: Final = "access_token"
+CONF_REFRESH_TOKEN: Final = "refresh_token"
+CONF_SERVER_URL: Final = "server_url"
+CONF_DEVICE_ID: Final = "device_id"
+CONF_ENABLE_BLE: Final = "enable_ble"
 
 MODE_PASSIVE: Final = "passive"
 MODE_ACTIVE: Final = "active"
@@ -192,9 +197,50 @@ DEFAULT_ACTIVE_INTERVAL: Final = 3600  # seconds
 MIN_ACTIVE_INTERVAL: Final = 600
 
 # --------------------------------------------------------------------------
-# Aktiia cloud (documentation only - this integration does not call it)
+# Aktiia cloud API
 # --------------------------------------------------------------------------
 # Blood pressure, heart rate, sleep and step data live here, not on the band.
-CLOUD_BASE_URL: Final = "https://prod001-eu.aktiia.io/"
-CLOUD_MEASUREMENTS_LATEST: Final = "physiological/api/v2/measurements/latest"
-CLOUD_ALL_MEASUREMENTS: Final = "physiological/api/v2/all-measurements"
+#
+# The resolver host is the app's compiled-in BuildConfig.SERVER_URL. Logging in
+# there returns the *regional* serverUrl this account actually uses, which the
+# client then talks to for everything else.
+CLOUD_RESOLVER_URL: Final = "https://prod001-eu.aktiia.io"
+
+# ApiConstantKt.BASIC_AUTHORIZATION - the app's public OAuth2 client
+# credentials, required on the login and token-refresh endpoints.
+API_BASIC_AUTHORIZATION: Final = "Basic bW9iaWxlLWFwcDpxdG03cmpVTUJwWHgyY0tQNDNYc1g5Nzk="
+API_VERSION_CODE: Final = "605"
+API_PLATFORM: Final = "Android"
+API_PRODUCT_STANDARD: Final = "standard"
+API_PRODUCT_CORE: Final = "core"
+
+# Auth
+EP_LOGIN: Final = "server-resolver/login"
+EP_TOKEN: Final = "oauth/api/v1/token"
+EP_USER: Final = "oauth/api/v1/account"
+
+# Physiological data
+EP_LATEST_MEASUREMENT: Final = "physiological/api/v2/measurements/latest"
+EP_ALL_MEASUREMENTS: Final = "physiological/api/v2/all-measurements"
+EP_DAILY: Final = "physiological/api/v2/daily"
+EP_DAILY_TTR: Final = "physiological/api/v2/daily/ttr"
+EP_MONTHLY: Final = "physiological/api/v2/monthly"
+EP_DAY_NIGHT: Final = "physiological/api/v2/day-night"
+EP_LATEST_INITIALIZATION: Final = "physiological/api/v1/latest-initialization"
+
+# Context data
+EP_SLEEP_SUMMARY: Final = "context-data/api/v1/daily-summary/sleep"
+EP_SLEEP_INSIGHTS: Final = "context-data/api/v1/insights/sleep"
+EP_STEPS: Final = "context-data/api/v1/insights/steps"
+
+# Devices
+EP_DEVICES: Final = "device/api/v1/device/"
+
+# Server statuses the app treats specially
+HTTP_BRACELET_BLOCKED: Final = 406
+HTTP_UPGRADE_REQUIRED: Final = 426
+
+# Cloud poll interval. The band syncs to the phone a few times a day, so
+# polling faster than this just burns requests.
+DEFAULT_CLOUD_INTERVAL: Final = 1800  # seconds
+MIN_CLOUD_INTERVAL: Final = 300
