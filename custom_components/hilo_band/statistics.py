@@ -24,13 +24,6 @@ from homeassistant.components.recorder.statistics import (
     async_add_external_statistics,
     get_last_statistics,
 )
-
-try:  # Home Assistant 2025.11+ replaced has_mean with mean_type.
-    from homeassistant.components.recorder.models import StatisticMeanType
-
-    _MEAN_KWARGS: dict = {"mean_type": StatisticMeanType.ARITHMETIC}
-except ImportError:  # pragma: no cover - older cores
-    _MEAN_KWARGS = {"has_mean": True}
 from homeassistant.core import HomeAssistant
 from homeassistant.util import dt as dt_util
 
@@ -42,6 +35,33 @@ _LOGGER = logging.getLogger(__name__)
 # How far back to reach on a first import when the account has no recorded
 # "first measurement" date to anchor to.
 DEFAULT_BACKFILL_DAYS = 365
+
+
+def _mean_kwargs() -> dict:
+    """Describe an arithmetic-mean statistic for whichever core we run on.
+
+    Home Assistant 2025.11 replaced ``has_mean=True`` with a ``mean_type``
+    enum and warns when the old form is used. The enum has lived at more than
+    one import path, so try each before falling back.
+    """
+    for module in (
+        "homeassistant.components.recorder.models.statistics",
+        "homeassistant.components.recorder.models",
+        "homeassistant.components.recorder.statistics",
+    ):
+        try:
+            mod = __import__(module, fromlist=["StatisticMeanType"])
+            return {"mean_type": mod.StatisticMeanType.ARITHMETIC}
+        except (ImportError, AttributeError):
+            continue
+    _LOGGER.warning(
+        "This Home Assistant has no StatisticMeanType; falling back to the "
+        "deprecated has_mean flag"
+    )
+    return {"has_mean": True}
+
+
+_MEAN_KWARGS = _mean_kwargs()
 
 
 def _statistic_id(slug: str, key: str) -> str:
