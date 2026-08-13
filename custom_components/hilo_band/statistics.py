@@ -24,6 +24,13 @@ from homeassistant.components.recorder.statistics import (
     async_add_external_statistics,
     get_last_statistics,
 )
+
+try:  # Home Assistant 2025.11+ replaced has_mean with mean_type.
+    from homeassistant.components.recorder.models import StatisticMeanType
+
+    _MEAN_KWARGS: dict = {"mean_type": StatisticMeanType.ARITHMETIC}
+except ImportError:  # pragma: no cover - older cores
+    _MEAN_KWARGS = {"has_mean": True}
 from homeassistant.core import HomeAssistant
 from homeassistant.util import dt as dt_util
 
@@ -152,11 +159,11 @@ class HiloStatisticsImporter:
         ]
 
         metadata = StatisticMetaData(
-            has_mean=True,
             has_sum=False,
             name=f"{self._device_name} {meta['name']}",
             source=DOMAIN,
             statistic_id=_statistic_id(self._slug, key),
             unit_of_measurement=meta["unit"],
+            **_MEAN_KWARGS,
         )
         async_add_external_statistics(self.hass, metadata, statistics)
